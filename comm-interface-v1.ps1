@@ -1,5 +1,59 @@
-﻿Add-Type -AssemblyName PresentationFramework
+Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
+
+$principal = New-Object Security.Principal.WindowsPrincipal(
+    [Security.Principal.WindowsIdentity]::GetCurrent()
+)
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    [System.Windows.MessageBox]::Show(
+        "Uruchom narzędzie jako Administrator, aby SFC, DISM, WMI i NETSH mogły poprawnie działać.",
+        "Wymagane uprawnienia",
+        [System.Windows.MessageBoxButton]::OK,
+        [System.Windows.MessageBoxImage]::Warning
+    ) | Out-Null
+    exit 1
+}
+
+function Invoke-NativeCommand {
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [Parameter()][string[]]$ArgumentList = @(),
+        [int]$TimeoutSeconds = 900
+    )
+
+    $outputFile = Join-Path $env:TEMP ("win11-repair-{0}.txt" -f [guid]::NewGuid().ToString("N"))
+    $errorFile = Join-Path $env:TEMP ("win11-repair-{0}.txt" -f [guid]::NewGuid().ToString("N"))
+
+    try {
+        $process = Start-Process -FilePath $FilePath `
+            -ArgumentList $ArgumentList `
+            -RedirectStandardOutput $outputFile `
+            -RedirectStandardError $errorFile `
+            -PassThru `
+            -WindowStyle Hidden
+
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            try { $process.Kill() } catch {}
+            $output = @("Operation timed out after $TimeoutSeconds seconds.")
+            return [PSCustomObject]@{
+                ExitCode = -1
+                Output = ($output -join "`r`n").Trim()
+            }
+        }
+
+        $output = @()
+        if (Test-Path $outputFile) { $output += Get-Content -Path $outputFile -Raw -ErrorAction SilentlyContinue }
+        if (Test-Path $errorFile) { $output += Get-Content -Path $errorFile -Raw -ErrorAction SilentlyContinue }
+
+        return [PSCustomObject]@{
+            ExitCode = $process.ExitCode
+            Output = ($output -join "`r`n").Trim()
+        }
+    }
+    finally {
+        Remove-Item -Path $outputFile,$errorFile -Force -ErrorAction SilentlyContinue
+    }
+}
 
 # Ustawienia responsywne na podstawie rozdzielczości ekranu
 $screen = [System.Windows.SystemParameters]::PrimaryScreenHeight
@@ -16,14 +70,14 @@ $mainMargin = 15 * $scale
 [xml]$XAML = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:sys="clr-namespace:System;assembly=mscorlib"
-        Title="Konserwacja Windows 11" 
+        Title="Konserwacja Windows 11"
         Height="$windowHeight" Width="$windowWidth"
         WindowStartupLocation="CenterScreen"
         Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}"
         Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"
         FontFamily="Segoe UI"
         ResizeMode="CanResize">
-    
+
     <Window.Resources>
         <Style TargetType="Button">
             <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundListMediumBrush}"/>
@@ -57,7 +111,7 @@ $mainMargin = 15 * $scale
                 </Setter.Value>
             </Setter>
         </Style>
-        
+
         <Style TargetType="TextBox">
             <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundChromeMediumBrush}"/>
             <Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
@@ -69,25 +123,25 @@ $mainMargin = 15 * $scale
             <Setter Property="VerticalScrollBarVisibility" Value="Auto"/>
         </Style>
     </Window.Resources>
-    
+
     <Grid Margin="$mainMargin">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
-        
+
         <!-- Header -->
         <StackPanel Grid.Row="0" Margin="0,0,0,15">
-            <TextBlock Text="Narzędzie Konserwacji Windows 11" 
+            <TextBlock Text="Narzędzie Konserwacji Windows 11"
                        FontSize="20" FontWeight="SemiBold"
                        Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
-            <TextBlock Text="Wybierz operację naprawczą poniżej" 
+            <TextBlock Text="Wybierz operację naprawczą poniżej"
                        FontSize="13" Opacity="0.8"
                        Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
                        Margin="0,5,0,0"/>
         </StackPanel>
-        
+
         <!-- Buttons ScrollViewer -->
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,0,0,15">
             <StackPanel>
@@ -148,9 +202,9 @@ $mainMargin = 15 * $scale
                 </Button>
             </StackPanel>
         </ScrollViewer>
-        
+
         <!-- Output Panel -->
-        <Border Grid.Row="2" 
+        <Border Grid.Row="2"
                 Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}"
                 BorderThickness="1"
                 BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"
@@ -163,18 +217,18 @@ $mainMargin = 15 * $scale
                     <RowDefinition Height="*"/>
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
-                
+
                 <Grid Grid.Row="0" Margin="0,0,0,8">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    
-                    <TextBlock Text="Wyjście operacji:" 
+
+                    <TextBlock Text="Wyjście operacji:"
                                FontSize="12" FontWeight="SemiBold"
                                Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
-                    
-                    <Button Name="btnExportLogs" 
+
+                    <Button Name="btnExportLogs"
                             Grid.Column="1"
                             Height="32"
                             Padding="12,6"
@@ -182,14 +236,14 @@ $mainMargin = 15 * $scale
                         <TextBlock Text="💾 Eksportuj logi"/>
                     </Button>
                 </Grid>
-                
-                <TextBox Name="txtOutput" 
+
+                <TextBox Name="txtOutput"
                          Grid.Row="1"
-                         IsReadOnly="True" 
+                         IsReadOnly="True"
                          TextWrapping="Wrap"
                          AcceptsReturn="True"
                          VerticalAlignment="Stretch"/>
-                
+
                 <TextBlock Name="txtStatusExport"
                            Grid.Row="2"
                            FontSize="10"
@@ -213,10 +267,10 @@ function Write-FormattedOutput {
         [string]$Message,
         [string]$Type = "info"
     )
-    
+
     $timestamp = Get-Date -Format "HH:mm:ss"
     $txtOutput = $Window.FindName("txtOutput")
-    
+
     $prefix = switch($Type) {
         "info"    { "ℹ️  " }
         "success" { "✅ " }
@@ -225,7 +279,7 @@ function Write-FormattedOutput {
         "step"    { "▶️  " }
         default   { "• " }
     }
-    
+
     $formattedMsg = "[$timestamp] $prefix$Message`n"
     $txtOutput.AppendText($formattedMsg)
     $txtOutput.ScrollToEnd()
@@ -254,18 +308,18 @@ $Window.FindName("btnSFC").Add_Click({
     Clear-Output
     Write-FormattedOutput "Uruchamianie skanowania i naprawy systemu..." "step"
     Write-FormattedOutput "To może potrwać kilka minut..." "info"
-    
+
     Disable-AllButtons
-    
+
     try {
         Write-FormattedOutput "Etap 1/2: Uruchamianie SFC /SCANNOW..." "step"
-        $sfcOutput = cmd /c "sfc /scannow 2>&1"
-        Write-FormattedOutput $sfcOutput "info"
-        
+        $sfc = Invoke-NativeCommand -FilePath "$env:SystemRoot\System32\sfc.exe" -ArgumentList @("/scannow")
+        Write-FormattedOutput $sfc.Output "info"
+
         Write-FormattedOutput "Etap 2/2: Uruchamianie DISM /RESTOREHEALTH..." "step"
-        $dismOutput = cmd /c "dism /online /cleanup-image /restorehealth 2>&1"
-        Write-FormattedOutput $dismOutput "info"
-        
+        $dism = Invoke-NativeCommand -FilePath "$env:SystemRoot\System32\dism.exe" -ArgumentList @("/online","/cleanup-image","/restorehealth")
+        Write-FormattedOutput $dism.Output "info"
+
         Write-FormattedOutput "Operacja zakończona sukcesem!" "success"
         $restartNeeded = $true
     }
@@ -281,25 +335,30 @@ $Window.FindName("btnSFC").Add_Click({
 $Window.FindName("btnWMI").Add_Click({
     Clear-Output
     Write-FormattedOutput "Sprawdzanie i naprawa repozytorium WMI..." "step"
-    
+
     Disable-AllButtons
-    
+
     try {
         Write-FormattedOutput "Etap 1/2: Weryfikacja repozytorium WMI..." "step"
-        $verifyOutput = cmd /c "winmgmt /verifyrepository 2>&1"
-        Write-FormattedOutput $verifyOutput "info"
+        $verify = Invoke-NativeCommand -FilePath "$env:SystemRoot\System32\wbem\winmgmt.exe" -ArgumentList @("/verifyrepository")
+        Write-FormattedOutput $verify.Output "info"
 
-        if ($verifyOutput -match "repository is inconsistent" -or $verifyOutput -match "niespójn") {
+        if ($verify.ExitCode -ne 0 -or $verify.Output -match "inconsistent|niespójn") {
             Write-FormattedOutput "Wykryto niespójność w repozytorium!" "warning"
             Write-FormattedOutput "Etap 2/2: Uruchamianie naprawy repozytorium..." "step"
-            
-            $repairOutput = cmd /c "winmgmt /salvagerepository 2>&1"
-            Write-FormattedOutput $repairOutput "info"
-            Write-FormattedOutput "Repozytorium zostało naprawione!" "success"
+
+            $repair = Invoke-NativeCommand -FilePath "$env:SystemRoot\System32\wbem\winmgmt.exe" -ArgumentList @("/salvagerepository")
+            Write-FormattedOutput $repair.Output "info"
+            if ($repair.ExitCode -eq 0) {
+                Write-FormattedOutput "Polecenie naprawy zakończono bez błędu procesu." "success"
+            }
+            else {
+                Write-FormattedOutput "Naprawa zwróciła kod $($repair.ExitCode)." "error"
+            }
         } else {
             Write-FormattedOutput "Repozytorium WMI jest spójne i nie wymaga naprawy." "success"
         }
-        
+
         $restartNeeded = $true
     }
     catch {
@@ -315,18 +374,18 @@ $Window.FindName("btnNET").Add_Click({
     Clear-Output
     Write-FormattedOutput "Resetowanie ustawień kart sieciowych..." "step"
     Write-FormattedOutput "To może potrwać kilka minut..." "info"
-    
+
     Disable-AllButtons
-    
+
     try {
         Write-FormattedOutput "Etap 1/2: Resetowanie stosu TCP/IP..." "step"
-        $netshIpOutput = cmd /c "netsh int ip reset 2>&1"
-        Write-FormattedOutput $netshIpOutput "info"
-        
+        $netshIp = Invoke-NativeCommand -FilePath "$env:SystemRoot\System32\netsh.exe" -ArgumentList @("int","ip","reset")
+        Write-FormattedOutput $netshIp.Output "info"
+
         Write-FormattedOutput "Etap 2/2: Resetowanie Winsock..." "step"
-        $winsockOutput = cmd /c "netsh winsock reset 2>&1"
-        Write-FormattedOutput $winsockOutput "info"
-        
+        $winsock = Invoke-NativeCommand -FilePath "$env:SystemRoot\System32\netsh.exe" -ArgumentList @("winsock","reset")
+        Write-FormattedOutput $winsock.Output "info"
+
         Write-FormattedOutput "Operacja zakończona sukcesem!" "success"
         $restartNeeded = $true
     }
@@ -342,22 +401,22 @@ $Window.FindName("btnNET").Add_Click({
 $Window.FindName("btnIP").Add_Click({
     Clear-Output
     Write-FormattedOutput "Odświeżanie adresu IP i czyszczenie cache DNS..." "step"
-    
+
     Disable-AllButtons
-    
+
     try {
         Write-FormattedOutput "Etap 1/3: Zwalnianie adresu IP..." "step"
-        $releaseOutput = cmd /c "ipconfig /release 2>&1"
-        Write-FormattedOutput $releaseOutput "info"
-        
+        $release = Invoke-NativeCommand -FilePath "$env:SystemRoot\System32\ipconfig.exe" -ArgumentList @("/release")
+        Write-FormattedOutput $release.Output "info"
+
         Write-FormattedOutput "Etap 2/3: Czyszczenie cache DNS..." "step"
-        $flushOutput = cmd /c "ipconfig /flushdns 2>&1"
-        Write-FormattedOutput $flushOutput "info"
-        
+        $flush = Invoke-NativeCommand -FilePath "$env:SystemRoot\System32\ipconfig.exe" -ArgumentList @("/flushdns")
+        Write-FormattedOutput $flush.Output "info"
+
         Write-FormattedOutput "Etap 3/3: Odnawianie adresu IP..." "step"
-        $renewOutput = cmd /c "ipconfig /renew 2>&1"
-        Write-FormattedOutput $renewOutput "info"
-        
+        $renew = Invoke-NativeCommand -FilePath "$env:SystemRoot\System32\ipconfig.exe" -ArgumentList @("/renew")
+        Write-FormattedOutput $renew.Output "info"
+
         Write-FormattedOutput "Operacja zakończona sukcesem! Sieć zostanie odświeżona." "success"
     }
     catch {
@@ -373,7 +432,7 @@ $Window.FindName("btnExportLogs").Add_Click({
     try {
         $txtStatus = $Window.FindName("txtStatusExport")
         $txtStatus.Text = "⏳ Przygotowywanie eksportu..."
-        
+
         Export-SystemLogs
     }
     catch {
@@ -396,7 +455,7 @@ function Show-RestartPrompt {
         [System.Windows.MessageBoxButton]::OKCancel,
         [System.Windows.MessageBoxImage]::Information
     )
-    
+
     if ($msgBox -eq "OK") {
         Write-Host "Planowanie restartu systemu za 60 sekund..." -ForegroundColor Cyan
         cmd /c "shutdown /r /t 60 /c `"Restart zaplanowany przez narzędzie naprawy systemu`""
@@ -405,44 +464,44 @@ function Show-RestartPrompt {
 
 function Export-SystemLogs {
     Add-Type -AssemblyName System.Windows.Forms
-    
+
     $timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
     $defaultFileName = "scan-WIN_$timestamp.txt"
-    
+
     $saveFileDialog = New-Object System.Windows.Forms.SaveFileDialog
     $saveFileDialog.Filter = "Pliki tekstowe (*.txt)|*.txt|Wszystkie pliki (*.*)|*.*"
     $saveFileDialog.FileName = $defaultFileName
     $saveFileDialog.InitialDirectory = [Environment]::GetFolderPath("Desktop")
-    
+
     $dialogResult = $saveFileDialog.ShowDialog()
-    
+
     if ($dialogResult -eq [System.Windows.Forms.DialogResult]::OK) {
         try {
             $exportPath = $saveFileDialog.FileName
             $txtOutput = $Window.FindName("txtOutput")
             $outputContent = $txtOutput.Text
             $txtStatus = $Window.FindName("txtStatusExport")
-            
+
             $sbReport = New-Object System.Text.StringBuilder
-            
+
             # Header
             $sbReport.AppendLine("=== RAPORT NAPRAWY SYSTEMU WINDOWS 11 ===") | Out-Null
             $sbReport.AppendLine("Data i godzina eksportu: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')") | Out-Null
             $sbReport.AppendLine("Nazwa komputera: $env:COMPUTERNAME") | Out-Null
             $sbReport.AppendLine("Użytkownik: $env:USERNAME") | Out-Null
             $sbReport.AppendLine("") | Out-Null
-            
+
             # Historia operacji
             $sbReport.AppendLine("=== HISTORIA OPERACJI Z INTERFEJSU ===") | Out-Null
             $sbReport.AppendLine($outputContent) | Out-Null
             $sbReport.AppendLine("") | Out-Null
-            
+
             # CBS.log
             $cbsLogPath = "C:\Windows\Logs\CBS\cbs.log"
             if (Test-Path $cbsLogPath) {
                 $sbReport.AppendLine("=== LOGI SFC (CBS.LOG) ===") | Out-Null
                 try {
-                    $cbsContent = Get-Content -Path $cbsLogPath -Raw -ErrorAction SilentlyContinue
+                    $cbsContent = Get-Content -Path $cbsLogPath -Tail 500 -ErrorAction SilentlyContinue | Out-String
                     $sbReport.AppendLine($cbsContent) | Out-Null
                 }
                 catch {
@@ -452,13 +511,13 @@ function Export-SystemLogs {
             else {
                 $sbReport.AppendLine("⚠️  Plik CBS.LOG nie został znaleziony na tym systemie.") | Out-Null
             }
-            
+
             $sbReport.AppendLine("") | Out-Null
             $sbReport.AppendLine("=== KONIEC RAPORTU ===") | Out-Null
-            
+
             # Zapis do pliku
             Set-Content -Path $exportPath -Value $sbReport.ToString() -Encoding UTF8
-            
+
             $txtStatus.Text = "✅ Eksport zakończony: $([System.IO.Path]::GetFileName($exportPath))"
             [System.Windows.MessageBox]::Show("Logi zostały pomyślnie wyeksportowane do:`n`n$exportPath", "Eksport zakończony", "OK", "Information")
         }
